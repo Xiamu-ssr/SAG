@@ -1,0 +1,121 @@
+name: 示例·拍照识物
+description: 提交一张样片，查看识别结果并播放两段样例语音。
+domain:
+  前台:
+    type: UI
+    color: '#4D7C68'
+    view: {directory: frontend, width: 340, height: 480}
+    node:
+      拍照识物:
+        packet:
+          照片:
+            照片: {type: text, default: samples/ginkgo.svg}
+          识物结果:
+            状态: text
+            提示: {type: text, optional: true}
+            主体: {type: text, optional: true}
+            讲解: {type: text, optional: true}
+            置信度: {type: number, optional: true}
+            主体语音: {type: text, optional: true}
+            讲解语音: {type: text, optional: true}
+        input: [照片:packet]
+        logic:
+          - 结果:[识物结果:packet] = call([ant服务器:domain/识别:node], input)
+        route:
+          - go([展示:output], 结果.数据)
+        output:
+          展示:
+            packet: [识物结果:packet]
+            action:
+              - go([ant服务器:domain/登记交付:node], output)
+  ant服务器:
+    color: '#B47B39'
+    notes:
+      - 协调云服务识别和语音合成。
+      - 前台展示结果后，登记识别状态和主体。
+    node:
+      识别:
+        input: [前台:domain/拍照识物:node/照片:packet]
+        logic:
+          - 识别结果:[云服务:domain/识物:node/结果:packet] = call([云服务:domain/识物:node], input)
+        route:
+          - IF 识别结果.数据.敏感 == true go([安全:output], {状态:"安全拦截", 提示:"这个东西可能有危险，请不要靠近"})
+          - IF 识别结果.数据.置信度 <= 20 go([未识别:output], {状态:"未识别", 提示:"没看清楚，请换个角度再试试"})
+          - >-
+            go([正常:output], {状态: "已识别", 主体: 识别结果.数据.主体,
+            讲解: 识别结果.数据.讲解, 置信度: 识别结果.数据.置信度,
+            主体语音: 主体语音.数据.音频地址, 讲解语音: 讲解语音.数据.音频地址})
+        output:
+          安全:
+            packet: [前台:domain/拍照识物:node/识物结果:packet]
+            action:
+              - return()
+          未识别:
+            packet: [前台:domain/拍照识物:node/识物结果:packet]
+            action:
+              - return()
+          正常:
+            logic:
+              - 主体语音 = call([语音样例:service], {文本:识别结果.数据.主体})
+              - 讲解语音 = call([语音样例:service], {文本:识别结果.数据.讲解})
+            packet: [前台:domain/拍照识物:node/识物结果:packet]
+            action:
+              - return()
+      登记交付:
+        input: [前台:domain/拍照识物:node/识物结果:packet]
+        logic:
+          - 上次 = read([识别记录:resource], 状态 == input.状态 && 主体 == input.主体)
+        route:
+          - IF 上次.分支 == "找到" go([再次登记:output], input)
+          - go([完成:output], input)
+        output:
+          再次登记:
+            packet: [前台:domain/拍照识物:node/识物结果:packet]
+            action:
+              - write([识别记录:resource], {状态:output.状态, 主体:output.主体})
+          完成:
+            packet: [前台:domain/拍照识物:node/识物结果:packet]
+            action:
+              - write([识别记录:resource], {状态:output.状态, 主体:output.主体})
+  云服务:
+    color: '#B95574'
+    notes: 示例按本地样片的路径返回预设识别结果。
+    node:
+      识物:
+        packet:
+          结果:
+            主体: text
+            讲解: text
+            置信度: number
+            敏感: boolean
+        input: [前台:domain/拍照识物:node/照片:packet]
+        route:
+          - IF input.照片 == "samples/ginkgo.svg" go([银杏叶:output], {主体:"银杏叶", 讲解:"银杏的叶片像一把小扇子，到了秋天常常变成金黄色。", 置信度:92, 敏感:false})
+          - IF input.照片 == "samples/cat.svg" go([橘猫:output], {主体:"橘猫", 讲解:"这只猫的橘色毛发上带有深色条纹。", 置信度:95, 敏感:false})
+          - IF input.照片 == "samples/butterfly.svg" go([蝴蝶:output], {主体:"蝴蝶", 讲解:"蝴蝶翅膀上的细小鳞片构成了丰富的颜色和花纹。", 置信度:89, 敏感:false})
+          - IF input.照片 == "samples/frog.svg" go([树蛙:output], {主体:"树蛙", 讲解:"许多树蛙的趾尖有吸盘，能附着在叶片和树枝上。", 置信度:93, 敏感:false})
+          - go([未知:output], {主体:"未知", 讲解:"", 置信度:0, 敏感:false})
+        output:
+          银杏叶: {packet: [结果:packet], action: [return()]}
+          橘猫: {packet: [结果:packet], action: [return()]}
+          蝴蝶: {packet: [结果:packet], action: [return()]}
+          树蛙: {packet: [结果:packet], action: [return()]}
+          未知: {packet: [结果:packet], action: [return()]}
+service:
+  语音样例:
+    description: 按文本查找预先合成的本地语音，交付可播放的地址。
+    script: services/speech.mjs
+    input:
+      文本: text
+    output:
+      音频地址: {type: text, optional: true}
+resource:
+  识别记录:
+    field:
+      状态: text
+      主体: {type: text, optional: true}
+fable:
+  - [[ant服务器:domain/识别:node/正常:output], 正常识物必须交付主体。]
+  - [[ant服务器:domain/识别:node/正常:output], 正常识物必须交付置信度。]
+  - [[ant服务器:domain/识别:node/未识别:output], 未识别时，不合成语音。]
+  - [[ant服务器:domain/识别:node/安全:output], 安全拦截时，不合成语音。]

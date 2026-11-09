@@ -1,0 +1,148 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
+import {dirname, join, resolve} from 'node:path';
+import {parse, stringify} from 'yaml';
+import {fixture} from './server-fixtures';
+import type {AppRow, AppSummary, RunRow} from '../server/store';
+import type {Reminder, SessionSnapshot} from '../server/session';
+import {echoStart} from './fixtures';
+
+test('adding a world only registers a validated directory; writable-source and template APIs do not exist', async t => {
+  const {request,directory,store} = fixture(t);
+  const selected = await request<{directory:string}>('POST','/api/pick-directory');
+  assert.equal(selected.body.directory,directory);
+  for(const body of [{name:'创建'},{source:'yaml'},{directory,builtin:true},{directory,template:'blank'}]) assert.equal((await request('POST','/api/apps',body)).status,400);
+  const added = await request<AppRow>('POST','/api/apps',{directory,spaceId:'local'});
+  assert.equal(added.status,200); assert.equal(added.body.builtin,false);
+  const row = added.body;
+  assert.equal((await request('POST','/api/apps',{directory})).status,200);
+  assert.equal(store.listApps().length,1);
+  for(const path of [`/api/apps/${row.id}`,`/api/apps/${row.id}/data`]) assert.equal((await request('PUT',path,{source:'change',data:{}})).status,404);
+  const list=await request<AppSummary[]>('GET','/api/apps');
+  assert.equal(list.body[0].directory,directory); assert.equal(list.body[0].fableCount,1);
+});
+test('adding a world rejects directories inside SAG even through a symbolic link', async t => {
+  const {request, root} = fixture(t);
+  const engine = resolve('.');
+  const example = join(engine, 'examples', 'photo-recognition');
+  const link = join(root, 'linked-world');
+  symlinkSync(example, link, 'dir');
+  const casingVariant = join(dirname(engine), 'SAG', 'examples', 'photo-recognition');
+  const denied = [engine, example, link, ...(existsSync(casingVariant) ? [casingVariant] : [])];
+  for (const directory of denied) {
+    const result = await request('POST', '/api/apps', {directory});
+    assert.equal(result.status, 400);
+    assert.match(result.body.error, /SAG 目录之外/);
+  }
+});
+test('world documents list nested files and keep reads inside docs', async t => {
+  const {request, directory} = fixture(t);
+  const {body: app} = await request<AppRow>('POST', '/api/apps', {directory});
+  const path = `/api/apps/${app.id}/documents`;
+  assert.deepEqual((await request('GET', path)).body, {files: []});
+  const docs = join(directory, 'docs');
+  mkdirSync(join(docs, 'notes'), {recursive: true});
+  writeFileSync(join(docs, 'README.md'), '# 迁移资料\n\n[原稿](notes/原稿.md)');
+  writeFileSync(join(docs, 'notes', '原稿.md'), '# 原稿');
+  writeFileSync(join(docs, 'notes', '原稿.txt'), '原稿');
+  writeFileSync(join(docs, '.private.md'), '隐藏文件');
+  writeFileSync(join(docs, 'other.json'), '{}');
+  writeFileSync(join(directory, 'private.md'), '目录外文件');
+  symlinkSync(join(directory, 'private.md'), join(docs, 'shortcut.md'));
+  const files = await request<{files: string[]}>('GET', path);
+  assert.deepEqual(new Set(files.body.files), new Set(['README.md', 'notes/原稿.md', 'notes/原稿.txt']));
+  const document = await request<{source: string}>('GET', path + '?path=' + encodeURIComponent('notes/原稿.md'));
+  assert.deepEqual(document.body, {source: '# 原稿'});
+  for (const entry of ['../private.md', '.private.md', 'shortcut.md', 'other.json']) {
+    assert.equal((await request('GET', path + '?path=' + encodeURIComponent(entry))).status, 400);
+  }
+});
+test('frontend files are directory-scoped, sandboxed, CORS-readable modules with the fixed bridge injected', async t => {
+  const {request,directory} = fixture(t), added=await request<AppRow>('POST','/api/apps',{directory}), row=added.body;
+  const base=row.assetBase+'/'+encodeURIComponent('前台');
+  const html=await request<string>('GET',base+'/index.html');
+  assert.equal(html.status,200); assert.match(html.text, /\/_sag\/ui\.js/); assert.match(html.text,/原始界面/);
+  assert.match(String(html.headers['content-security-policy']), /sandbox allow-scripts allow-forms/);
+  assert.match(String(html.headers['content-security-policy']), /form-action 'none'/);
+  assert.match(String(html.headers['content-security-policy']), /connect-src http:\/\/127\.0\.0\.1:4880\/ui\//);
+  assert.equal(html.headers['access-control-allow-origin'],'*');
+  const script=await request<string>('GET',base+'/main.js'); assert.equal(script.status,200); assert.match(script.text,/loaded/);
+  for(const path of ['initial.sqlite','../world.yaml','%2e%2e%2fworld.yaml','.env','%2fetc%2fpasswd']) assert.equal((await request('GET',base+'/'+path)).status,404);
+  const bridge=await request<string>('GET','/_sag/ui.js'); assert.equal(bridge.status,200); assert.match(bridge.text,/window.SAG/);
+});
+test('start, input and stop address the same world session and save only on opt-in', async t => {
+  let now = 0;
+  const {request,directory,store} = fixture(t, {now: () => now}), row=(await request<AppRow>('POST','/api/apps',{directory})).body;
+  const path = `/api/apps/${row.id}/session`;
+  assert.equal((await request('GET', path)).body, null);
+  assert.equal((await request('POST', '/api/runs', echoStart)).status, 404);
+  assert.equal((await request('POST', path, {fingerprint: 'stale'})).status, 400);
+  assert.equal((await request('POST', path, {fingerprint: row.fingerprint, record: 'yes'})).status, 400);
+  assert.equal((await request('POST', path, {fingerprint: row.fingerprint, speed: 0})).status, 400);
+  const session = (await request<SessionSnapshot>('POST', path, {fingerprint: row.fingerprint, record: true})).body;
+  assert.equal(session.status, 'running');
+  assert.equal(session.idleStop, false);
+  assert.equal(session.speed, 1);
+  assert.equal((await request('POST', path, {fingerprint: row.fingerprint})).status, 400);
+  assert.equal((await request('POST', path + '/input', {...echoStart, sessionId: 'stale'})).status, 400);
+  assert.equal((await request('POST', path + '/input', {...echoStart, sessionId: session.id, input: []})).status, 400);
+  const input = await request<SessionSnapshot>('POST', path + '/input', {...echoStart, sessionId: session.id});
+  assert.equal(input.status, 200);
+  assert.deepEqual(input.body.view!.current.记录, []);
+  now += 6000;
+  const live = (await request<SessionSnapshot>('GET', path + '?since=' + encodeURIComponent(input.body.cursor))).body;
+  assert.deepEqual(live.view!.current.记录, [echoStart.input]);
+  assert.equal((await request<SessionSnapshot>('GET', path + '?since=' + encodeURIComponent(live.cursor))).body.view, undefined);
+  assert.equal((await request('GET', '/api/sessions/reminder')).body, null);
+  assert.equal((await request('POST', path + '/control', {sessionId: session.id, action: 'speed', speed: 11})).status, 400);
+  const changed = await request<SessionSnapshot>('POST', path + '/control', {sessionId: session.id, action: 'speed', speed: 0.1});
+  assert.equal(changed.body.speed, 0.1);
+  assert.equal(changed.body.time, live.time);
+  now = 600_000;
+  const reminder = (await request<Reminder>('GET', '/api/sessions/reminder')).body;
+  assert.deepEqual(reminder, {appId: row.id, sessionId: session.id, name: row.name});
+  const continued = await request<SessionSnapshot>('POST', path + '/control', {sessionId: reminder.sessionId, action: 'continue'});
+  assert.equal(continued.body.status, 'running');
+  assert.equal((await request('GET', '/api/sessions/reminder')).body, null);
+  assert.equal((await request('POST', path + '/control', {sessionId: session.id, action: 'stop'})).body, null);
+  const saved = (await request<RunRow>('GET', `/api/runs/${session.id}`)).body;
+  assert(saved.saved);
+  assert.equal(store.runs(row.id).length, 1);
+  assert.equal((await request('GET', saved.assetBase + '/' + encodeURIComponent('前台') + '/index.html')).status, 200);
+  const restarted = (await request<SessionSnapshot>('POST', path, {fingerprint: row.fingerprint})).body;
+  assert.deepEqual(restarted.view!.current.记录, []);
+  assert.equal((await request('POST', path + '/control', {sessionId: session.id, action: 'stop'})).status, 400);
+  await request('POST', path + '/control', {sessionId: restarted.id, action: 'stop'});
+  assert.equal(store.runs(row.id).length, 1);
+});
+test('media origins allow native playback and persist with the captured frontend policy', async t => {
+  const {request,directory} = fixture(t);
+  const file = join(directory, 'world.yaml');
+  const raw = parse(readFileSync(file, 'utf8'));
+  const origin = 'http://127.0.0.1:5100';
+  raw.domain.前台.view.media = [origin];
+  writeFileSync(file, stringify(raw));
+  const {body: row} = await request<AppRow>('POST', '/api/apps', {directory});
+  const endpoint = `/api/apps/${row.id}/session`;
+  const {body: session} = await request<SessionSnapshot>('POST', endpoint, {fingerprint:row.fingerprint, record:true});
+  await request('POST', endpoint + '/input', {...echoStart, sessionId:session.id});
+  await request('POST', endpoint + '/control', {sessionId:session.id, action:'stop'});
+  raw.domain.前台.view.media = [];
+  writeFileSync(file, stringify(raw));
+  const {headers} = await request('GET', `/ui/run/${session.id}/${encodeURIComponent('前台')}/index.html`);
+  const csp = String(headers['content-security-policy']);
+  assert.match(csp, /media-src 'self' blob: http:\/\/127\.0\.0\.1:5100;/);
+  assert.match(csp, /img-src 'self' data: blob: http:\/\/127\.0\.0\.1:5100;/);
+  assert.doesNotMatch(csp, /connect-src [^;]*:5100/);
+});
+test('native pick/open and other writes require local Host, marker and non-opaque same-origin requests', async t => {
+  const {request,directory,nativeCalls} = fixture(t), row=(await request<AppRow>('POST','/api/apps',{directory})).body;
+  const writes=['/api/pick-directory',`/api/apps/${row.id}/open-directory`,'/api/apps',
+    `/api/apps/${row.id}/session`, `/api/apps/${row.id}/session/input`, `/api/apps/${row.id}/session/control`];
+  for(const path of writes) for(const headers of [{'x-sag-local':'0'},{origin:'null'},{origin:'https://evil.example'},{host:'evil.example:4880'}]) assert.equal((await request('POST',path,{directory},headers)).status,403);
+  assert.deepEqual(nativeCalls,[]);
+  assert.equal((await request('POST',`/api/apps/${row.id}/open-directory`)).status,200);
+  assert.deepEqual(nativeCalls,[directory]);
+  assert.equal((await request('GET','/api/apps',undefined,{host:'127.0.0.1:4999'})).status,403);
+});

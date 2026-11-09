@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>拍照识物</title>
+  <style>
+    :root { color-scheme: light; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; color: #293f34; background: #f6f5ef; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 16px; background: radial-gradient(ellipse at 90% 0, #dfe8d5, transparent 65%); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    header span { font-size: 11px; color: #586b52; border: 1px solid #cdd8c3; border-radius: 20px; padding: 4px 8px; }
+    h1 { font-size: 21px; font-weight: 600; margin: 0; }
+    .intro { margin: 6px 0 12px; color: #596b56; font-size: 12px; }
+    figure { position: relative; margin: 0; border-radius: 12px; overflow: hidden; background: #314a3d; }
+    #viewfinder { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; }
+    .guides { position: absolute; inset: 15% 21%; border: 1px solid #fff9; border-radius: 10px; pointer-events: none; }
+    .guides::after { content: "+"; position: absolute; inset: 0; display: grid; place-items: center; font: 20px sans-serif; color: #fffc; }
+    #sample-number, #rotation { position: absolute; bottom: 8px; padding: 4px 7px; border: 0; border-radius: 5px; color: white; background: #193227db; font-size: 11px; }
+    #sample-number { left: 8px; }
+    #rotation { right: 8px; }
+    .samples { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 7px 0 10px; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    button:focus-visible { outline: 2px solid #4d7c68; outline-offset: 2px; }
+    .samples button { min-width: 0; padding: 2px; border: 1px solid #cedbc6; border-radius: 6px; background: #f8f9f2; overflow: hidden; }
+    .samples button[aria-pressed="true"] { border-color: #426d57; box-shadow: inset 0 0 0 1px #426d57; background: #e6eedc; }
+    .samples img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 3px; }
+    .samples span { display: block; padding: 3px 0 1px; font-size: 11px; }
+    .shutter { width: 100%; min-height: 34px; border: 1px solid #315b46; border-radius: 7px; background: #315b46; padding: 4px 8px; color: white; font-size: 12px; font-weight: 600; }
+    .shutter:disabled { cursor: default; opacity: .55; }
+    [sag-error] { color: #8c543c; font-size: 12px; overflow-wrap: anywhere; }
+    [sag-error]:empty { display: none; }
+    .result { margin-top: 12px; border-top: 1px solid #d9e1cf; padding-top: 8px; }
+    .result small { color: #596b56; font-size: 11px; }
+    .result dl { margin: 7px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; font-size: 12px; line-height: 1.5; }
+    dt { color: #596b56; } dd { margin: 0; overflow-wrap: anywhere; }
+    audio { display: block; width: 100%; height: 32px; }
+  </style>
+</head>
+<body>
+  <header><h1>拍照识物</h1><span>样片演练</span></header>
+  <p class="intro">选一张样片，按快门识物。</p>
+  <form sag-entry-input="[前台:domain/拍照识物:node]">
+    <input type="hidden" name="照片" value="samples/ginkgo.svg">
+    <figure aria-label="取景框">
+      <img id="viewfinder" src="samples/ginkgo.svg" alt="银杏叶">
+      <span class="guides" aria-hidden="true"></span>
+      <span id="sample-number">1 / 4</span>
+      <button type="button" id="rotation">暂停轮播</button>
+    </figure>
+    <div class="samples" role="group" aria-label="选择样片">
+      <button type="button" aria-pressed="true"><img src="samples/ginkgo.svg" alt=""><span>银杏叶</span></button>
+      <button type="button" aria-pressed="false"><img src="samples/cat.svg" alt=""><span>橘猫</span></button>
+      <button type="button" aria-pressed="false"><img src="samples/butterfly.svg" alt=""><span>蝴蝶</span></button>
+      <button type="button" aria-pressed="false"><img src="samples/frog.svg" alt=""><span>树蛙</span></button>
+    </div>
+    <button type="submit" class="shutter" disabled>拍摄识物</button>
+  </form>
+  <p sag-error role="status"></p>
+  <section class="result" aria-label="识别结果" aria-live="polite">
+    <small>识别结果</small>
+    <dl></dl>
+  </section>
+  <script>
+    const form = document.querySelector('form');
+    const samples = Array.from(form.querySelectorAll('.samples button'));
+    const viewfinder = document.querySelector('#viewfinder');
+    const count = document.querySelector('#sample-number');
+    const rotation = document.querySelector('#rotation');
+    const result = document.querySelector('.result dl');
+    let selected = 0;
+    let timer;
+
+    function select(index) {
+      selected = index;
+      const sample = samples[index];
+      const path = sample.querySelector('img').getAttribute('src');
+      viewfinder.src = path;
+      viewfinder.alt = sample.textContent;
+      form.elements.namedItem('照片').value = path;
+      count.textContent = (index + 1) + ' / ' + samples.length;
+      samples.forEach((button, i) => button.setAttribute('aria-pressed', String(i === index)));
+    }
+
+    function rotate(enabled) {
+      clearInterval(timer);
+      timer = enabled ? setInterval(() => select((selected + 1) % samples.length), 4000) : undefined;
+      rotation.textContent = enabled ? '暂停轮播' : '继续轮播';
+    }
+
+    samples.forEach((button, index) => button.addEventListener('click', () => {
+      rotate(false);
+      select(index);
+    }));
+    rotation.addEventListener('click', () => rotate(timer === undefined));
+    form.addEventListener('submit', () => rotate(false));
+    window.SAG?.onOutput(snapshot => {
+      const data = snapshot[form.getAttribute('sag-entry-input')]?.data;
+      result.replaceChildren();
+      for (const [name, value] of Object.entries(data ?? {})) {
+        const label = document.createElement('dt');
+        label.textContent = name;
+        const detail = document.createElement('dd');
+        if (name === '主体语音' || name === '讲解语音') {
+          const player = document.createElement('audio');
+          player.controls = true;
+          player.preload = 'none';
+          player.setAttribute('aria-label', name);
+          player.src = value;
+          detail.append(player);
+        } else {
+          detail.textContent = String(value);
+        }
+        result.append(label, detail);
+      }
+    });
+    rotate(!matchMedia('(prefers-reduced-motion: reduce)').matches);
+  </script>
+</body>
+</html>

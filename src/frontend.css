@@ -1,0 +1,69 @@
+.frontend-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  transform-origin: 0 0;
+  display: flex;
+  flex-direction: column;
+  background: #fcfbf6;
+  border: 1px solid #c9d3c6;
+  border-radius: 14px;
+  box-shadow:
+    0 8px 0 #6f82601a,
+    0 15px 38px #314b3314;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.frontend-window header {
+  height: 32px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: #edf0e6;
+  border-bottom: 1px solid #d9dfd2;
+}
+.frontend-window header button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3a5a49;
+}
+.frontend-window header span {
+  font-size: 10px;
+  color: #73816d;
+  font-variant-numeric: tabular-nums;
+}
+.frontend-window iframe {
+  display: block;
+  border: 0;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  background: #fbfaf5;
+}
+.frontend-window .frontend-resize {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  border: 0;
+  background: #edf0e6c9;
+  color: #69805f;
+  padding: 3px 4px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.frontend-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}

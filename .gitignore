@@ -1,0 +1,17 @@
+/node_modules/
+/dist/
+/output/
+/.sag/
+/.sag-backups/
+/worlds/
+/examples/*
+!/examples/photo-recognition/
+world.yaml
+!/examples/photo-recognition/world.yaml
+*.sqlite
+*.sqlite-*
+!/examples/photo-recognition/initial.sqlite
+.env
+.env.*
+.DS_Store
+*.log
